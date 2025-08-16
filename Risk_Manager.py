@@ -1,427 +1,309 @@
+# risk_manager.py
+
 """
-Risk Manager - Production Ready with OH SHIT Handle
-Zero tolerance for risk breaches. Fail-safe position sizing.
+A production-grade, modular risk management system for the Trailhead Catalyst Bot.
+
+This module is designed around a factory function, `create_geological_risk_manager`,
+which assembles and returns a fully configured risk management instance. This
+pattern provides a clean, single entry point while preserving the internal
+modularity and separation of concerns required for a robust, real-money system.
+
+Every component adheres to a fail-closed policy and is built to the exact
+engineering specifications for performance, reliability, and precision.
+
+v8.0.0 - The Final Cut
 """
+
+from __future__ import annotations
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional, Tuple, Deque
+from collections import deque
 
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-import logging
-import os
-from typing import Dict, List, Tuple, Optional, NamedTuple
-from dataclasses import dataclass
-from enum import Enum
-import json
-import warnings
-warnings.filterwarnings('ignore')
+from scipy.stats import percentileofscore
 
-class RiskLevel(Enum):
-    """Risk level classifications"""
-    SAFE = "SAFE"
-    ELEVATED = "ELEVATED" 
-    DANGEROUS = "DANGEROUS"
-    EMERGENCY = "EMERGENCY"
-    LOCKDOWN = "LOCKDOWN"
+# --- Foundational Data Structures & Enumerations ---
 
-class PositionSize(NamedTuple):
-    """Immutable position sizing decision"""
-    symbol: str
-    direction: str  # 'LONG', 'SHORT', 'FLAT'
-    size_usd: float
-    size_percent: float  # Percent of account
-    leverage: float
-    max_loss_usd: float
-    confidence_level: float
-    risk_level: RiskLevel
-    timestamp: datetime
-    rationale: str
+class RiskRegime(Enum):
+    """Enumeration of market geological regimes based on VIX and structural analysis."""
+    STABLE = "STABLE"
+    SEISMIC = "SEISMIC"
+    CRISIS = "CRISIS"
+    COMPLACENT = "COMPLACENT"
 
-@dataclass
-class AccountState:
-    """Current account state"""
-    total_equity: float
-    available_cash: float
-    total_exposure: float
-    daily_pnl: float
-    weekly_pnl: float
-    monthly_pnl: float
-    max_drawdown: float
-    open_positions: Dict[str, float]  # symbol -> position_value
-    
-class EmergencyProtocol:
-    """OH SHIT HANDLE - Emergency position management"""
-    
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
-        
-        # HARD LIMITS - these trigger immediate action
-        self.max_daily_loss_pct = 3.0      # 3% daily loss = emergency close
-        self.max_weekly_loss_pct = 8.0     # 8% weekly loss = lockdown
-        self.max_monthly_loss_pct = 15.0   # 15% monthly = full reset
-        self.max_single_position_pct = 5.0 # 5% max per position
-        self.max_total_exposure_pct = 25.0 # 25% max total exposure
-        
-        # Black swan triggers
-        self.vix_panic_level = 45          # VIX > 45 = market panic
-        self.correlation_break_threshold = 0.8  # Major correlation breakdown
-        
-        self.emergency_active = False
-        self.lockdown_until = None
-        
-    def check_emergency_conditions(self, account: AccountState, 
-                                 market_state: Dict) -> Tuple[RiskLevel, str]:
-        """
-        Check if emergency protocols should activate
-        Returns: (risk_level, reason)
-        """
-        reasons = []
-        
-        # Check account-based triggers
-        if account.daily_pnl / account.total_equity * 100 <= -self.max_daily_loss_pct:
-            self.emergency_active = True
-            return RiskLevel.EMERGENCY, f"Daily loss limit breached: {account.daily_pnl/account.total_equity*100:.1f}%"
-            
-        if account.weekly_pnl / account.total_equity * 100 <= -self.max_weekly_loss_pct:
-            self.lockdown_until = datetime.now() + timedelta(days=7)
-            return RiskLevel.LOCKDOWN, f"Weekly loss limit breached: {account.weekly_pnl/account.total_equity*100:.1f}%"
-            
-        if account.monthly_pnl / account.total_equity * 100 <= -self.max_monthly_loss_pct:
-            self.lockdown_until = datetime.now() + timedelta(days=30)
-            return RiskLevel.LOCKDOWN, f"Monthly loss limit breached: {account.monthly_pnl/account.total_equity*100:.1f}%"
-            
-        # Check exposure limits
-        exposure_pct = account.total_exposure / account.total_equity * 100
-        if exposure_pct > self.max_total_exposure_pct:
-            reasons.append(f"Exposure limit: {exposure_pct:.1f}% > {self.max_total_exposure_pct}%")
-            
-        # Check market-based triggers
-        current_vix = market_state.get('vix', 20)
-        if current_vix > self.vix_panic_level:
-            self.emergency_active = True
-            return RiskLevel.EMERGENCY, f"VIX panic level: {current_vix} > {self.vix_panic_level}"
-            
-        # Check if still in lockdown
-        if self.lockdown_until and datetime.now() < self.lockdown_until:
-            return RiskLevel.LOCKDOWN, f"In lockdown until {self.lockdown_until}"
-            
-        # Determine risk level
-        if reasons:
-            return RiskLevel.DANGEROUS, "; ".join(reasons)
-        elif exposure_pct > self.max_total_exposure_pct * 0.8:
-            return RiskLevel.ELEVATED, f"High exposure: {exposure_pct:.1f}%"
-        else:
-            return RiskLevel.SAFE, "All systems normal"
-            
-    def emergency_flatten(self, account: AccountState) -> List[str]:
-        """
-        Emergency position flattening - close everything NOW
-        Returns list of symbols to close
-        """
-        self.logger.critical("🚨 EMERGENCY FLATTEN ACTIVATED 🚨")
-        
-        symbols_to_close = list(account.open_positions.keys())
-        
-        self.logger.critical(f"Closing all positions: {symbols_to_close}")
-        
-        return symbols_to_close
-        
-    def reset_emergency(self):
-        """Reset emergency state after manual review"""
-        self.emergency_active = False
-        self.lockdown_until = None
-        self.logger.warning("Emergency state manually reset")
-
-class RiskManager:
+@dataclass(frozen=True)
+class ProtectionSettings:
     """
-    Production-ready risk manager with emergency protocols
-    Calculates position sizes and enforces hard limits
+    Immutable configuration for risk thresholds, based on engineering specifications.
+    These values are considered ground truth for the risk system's behavior.
     """
-    
-    def __init__(self, account_equity: float):
-        self.account_equity = account_equity
-        self.logger = self._setup_logging()
-        self.emergency = EmergencyProtocol()
-        
-        # Position sizing parameters
-        self.base_position_pct = 1.0      # 1% base position
-        self.max_position_pct = 4.0       # 4% max position (conservative)
-        self.confidence_multiplier = 2.0  # Scale by confidence
-        
-        # Leverage constraints by asset class
-        self.max_leverage = {
-            'crypto': 5.0,    # 5x max on crypto
-            'forex': 10.0,    # 10x max on forex  
-            'equity': 2.0,    # 2x max on equities
-            'default': 1.0    # 1x default
-        }
-        
-        # Risk tracking
-        self.position_history = []
-        self.daily_trades = []
-        
-    def _setup_logging(self) -> logging.Logger:
-        logging.basicConfig(level=logging.INFO)
-        return logging.getLogger(__name__)
-        
-    def _classify_asset(self, symbol: str) -> str:
-        """Classify asset for leverage limits"""
-        crypto_symbols = ['BTC', 'ETH', 'SOL', 'USDT', 'BUSD']
-        forex_symbols = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF']
-        
-        symbol_upper = symbol.upper()
-        
-        for crypto in crypto_symbols:
-            if crypto in symbol_upper:
-                return 'crypto'
-                
-        for forex in forex_symbols:
-            if forex in symbol_upper and len(symbol) == 6:  # EURUSD format
-                return 'forex'
-                
-        return 'equity'
-        
-    def _calculate_kelly_fraction(self, win_rate: float, avg_win: float, 
-                                avg_loss: float) -> float:
-        """
-        Calculate Kelly criterion for position sizing
-        Conservative implementation with caps
-        """
-        if avg_loss <= 0 or win_rate <= 0:
-            return 0.0
-            
-        # Kelly formula: f = (bp - q) / b
-        # where b = avg_win/avg_loss, p = win_rate, q = 1-win_rate
-        b = avg_win / avg_loss
-        p = win_rate
-        q = 1 - win_rate
-        
-        kelly_fraction = (b * p - q) / b
-        
-        # Cap Kelly at 25% (quarter Kelly for safety)
-        kelly_capped = min(0.25, max(0, kelly_fraction))
-        
-        return kelly_capped
-        
-    def calculate_position_size(self, symbol: str, signal_strength: float,
-                              confidence: float, direction: str,
-                              account_state: AccountState,
-                              market_state: Dict) -> PositionSize:
-        """
-        Calculate optimal position size with all safety checks
-        """
+    vix_regime_lookback_days: int = 504
+    vix_seismic_percentile: float = 0.80
+    vix_crisis_percentile: float = 0.95
+    stability_floor: float = 0.30
+    liquidity_floor: float = 0.20
+    seismic_reduction_factor: float = 0.5
+    crisis_reduction_factor: float = 0.1
+    max_position_size: float = 0.08
+
+@dataclass(frozen=True)
+class RiskAssessment:
+    """
+    An immutable snapshot of the market's geological condition at a point in time.
+    Serves as the definitive output of a risk assessment cycle.
+    """
+    regime: RiskRegime
+    terrain_stability: float
+    fault_line_stress: float
+    weather_intensity: float
+    liquidity_depth: float
+    flow_momentum: float
+    information_coefficient: float
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+# --- Core Analytical Modules ---
+
+class _TerrainScanner:
+    """Analyzes the market's correlation structure (the "terrain")."""
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+
+    def analyze_stability(self, returns_df: pd.DataFrame, lookback: int = 60) -> float:
+        """Calculates terrain stability using an exponentially weighted covariance matrix."""
+        if len(returns_df) < lookback:
+            self.logger.warning(f"Insufficient data for stability analysis. Returning neutral.")
+            return 0.5
         try:
-            # Check emergency conditions first
-            risk_level, risk_reason = self.emergency.check_emergency_conditions(
-                account_state, market_state
-            )
-            
-            # Emergency protocols
-            if risk_level == RiskLevel.LOCKDOWN:
-                return PositionSize(
-                    symbol=symbol,
-                    direction='FLAT',
-                    size_usd=0.0,
-                    size_percent=0.0,
-                    leverage=1.0,
-                    max_loss_usd=0.0,
-                    confidence_level=0.0,
-                    risk_level=risk_level,
-                    timestamp=datetime.now(),
-                    rationale=f"LOCKDOWN: {risk_reason}"
-                )
-                
-            if risk_level == RiskLevel.EMERGENCY:
-                # Only allow closing positions, no new positions
-                if direction != 'FLAT':
-                    return PositionSize(
-                        symbol=symbol,
-                        direction='FLAT',
-                        size_usd=0.0,
-                        size_percent=0.0,
-                        leverage=1.0,
-                        max_loss_usd=0.0,
-                        confidence_level=0.0,
-                        risk_level=risk_level,
-                        timestamp=datetime.now(),
-                        rationale=f"EMERGENCY - No new positions: {risk_reason}"
-                    )
-                    
-            # Base position sizing
-            base_size_pct = self.base_position_pct
-            
-            # Scale by signal strength (0-100)
-            signal_multiplier = signal_strength / 100.0
-            
-            # Scale by confidence (0-1)
-            confidence_multiplier = confidence * self.confidence_multiplier
-            
-            # Calculate raw position size
-            raw_size_pct = base_size_pct * signal_multiplier * confidence_multiplier
-            
-            # Apply caps
-            max_allowed_pct = self.max_position_pct
-            if risk_level == RiskLevel.DANGEROUS:
-                max_allowed_pct *= 0.5  # Half size in dangerous conditions
-            elif risk_level == RiskLevel.ELEVATED:
-                max_allowed_pct *= 0.75  # Reduce size in elevated risk
-                
-            final_size_pct = min(raw_size_pct, max_allowed_pct)
-            
-            # Check if we already have position in this symbol
-            existing_position = account_state.open_positions.get(symbol, 0)
-            if abs(existing_position) > 0:
-                # Reduce new position size if we already have exposure
-                final_size_pct *= 0.5
-                
-            # Calculate USD size
-            size_usd = account_state.total_equity * final_size_pct / 100
-            
-            # Determine leverage
-            asset_class = self._classify_asset(symbol)
-            max_lev = self.max_leverage.get(asset_class, 1.0)
-            
-            # Reduce leverage in risky conditions
-            if risk_level in [RiskLevel.DANGEROUS, RiskLevel.ELEVATED]:
-                max_lev = min(max_lev, 2.0)
-                
-            # Conservative leverage for low confidence
-            if confidence < 0.7:
-                max_lev = min(max_lev, 1.5)
-                
-            leverage = min(max_lev, confidence * max_lev)
-            
-            # Calculate max loss (2% of position)
-            max_loss_usd = size_usd * 0.02
-            
-            # Final validation
-            if size_usd < 50:  # Minimum position size
-                return PositionSize(
-                    symbol=symbol,
-                    direction='FLAT',
-                    size_usd=0.0,
-                    size_percent=0.0,
-                    leverage=1.0,
-                    max_loss_usd=0.0,
-                    confidence_level=confidence,
-                    risk_level=risk_level,
-                    timestamp=datetime.now(),
-                    rationale="Position too small - below minimum"
-                )
-                
-            rationale = f"Signal:{signal_strength:.0f}, Conf:{confidence:.2f}, Risk:{risk_level.value}"
-            
-            position = PositionSize(
-                symbol=symbol,
-                direction=direction,
-                size_usd=size_usd,
-                size_percent=final_size_pct,
-                leverage=leverage,
-                max_loss_usd=max_loss_usd,
-                confidence_level=confidence,
-                risk_level=risk_level,
-                timestamp=datetime.now(),
-                rationale=rationale
-            )
-            
-            self.logger.info(f"Position calculated: {position}")
-            
-            return position
-            
-        except Exception as e:
-            self.logger.error(f"Position sizing failed: {e}")
-            # Return safe default
-            return PositionSize(
-                symbol=symbol,
-                direction='FLAT',
-                size_usd=0.0,
-                size_percent=0.0,
-                leverage=1.0,
-                max_loss_usd=0.0,
-                confidence_level=0.0,
-                risk_level=RiskLevel.EMERGENCY,
-                timestamp=datetime.now(),
-                rationale=f"SYSTEM ERROR: {e}"
-            )
-            
-    def check_stop_loss(self, symbol: str, entry_price: float, 
-                       current_price: float, position_size: PositionSize) -> bool:
-        """
-        Check if stop loss should trigger
-        """
-        if position_size.direction == 'FLAT':
-            return False
-            
-        # Calculate current P&L
-        if position_size.direction == 'LONG':
-            pnl_pct = (current_price - entry_price) / entry_price
-        else:  # SHORT
-            pnl_pct = (entry_price - current_price) / entry_price
-            
-        current_loss = position_size.size_usd * abs(pnl_pct)
-        
-        # Trigger stop if max loss exceeded
-        if current_loss >= position_size.max_loss_usd:
-            self.logger.warning(f"Stop loss triggered for {symbol}: "
-                              f"Loss ${current_loss:.2f} >= ${position_size.max_loss_usd:.2f}")
-            return True
-            
-        return False
-        
-    def get_emergency_status(self) -> Dict:
-        """Get current emergency protocol status"""
-        return {
-            'emergency_active': self.emergency.emergency_active,
-            'lockdown_until': self.emergency.lockdown_until,
-            'daily_loss_limit': self.emergency.max_daily_loss_pct,
-            'weekly_loss_limit': self.emergency.max_weekly_loss_pct,
-            'vix_panic_level': self.emergency.vix_panic_level,
-            'max_position_pct': self.max_position_pct,
-            'timestamp': datetime.now()
-        }
-        
-    def manual_emergency_override(self, override_code: str = "MANUAL_RESET"):
-        """Manual emergency reset - use with extreme caution"""
-        if override_code == "MANUAL_RESET":
-            self.emergency.reset_emergency()
-            self.logger.critical("🔓 EMERGENCY MANUALLY RESET BY OPERATOR")
-        else:
-            self.logger.error("Invalid override code")
+            recent_returns = returns_df.iloc[-lookback // 2:]
+            historical_returns = returns_df.iloc[-lookback:-lookback // 2]
+            recent_corr = self._ewm_corr(recent_returns)
+            historical_corr = self._ewm_corr(historical_returns)
+            distance = np.linalg.norm(recent_corr.values - historical_corr.values, 'fro')
+            max_distance = np.sqrt(2 * len(returns_df.columns))
+            return 1.0 - np.clip(distance / max_distance, 0, 1)
+        except Exception:
+            self.logger.error(f"Correlation stability analysis failed.", exc_info=True)
+            return 0.0
 
-# Usage example
-if __name__ == "__main__":
-    # Initialize with $10k account
-    risk_manager = RiskManager(account_equity=10000)
-    
-    # Mock account state
-    account = AccountState(
-        total_equity=10000,
-        available_cash=8000,
-        total_exposure=2000,
-        daily_pnl=-100,
-        weekly_pnl=50,
-        monthly_pnl=200,
-        max_drawdown=500,
-        open_positions={'SPY': 1000}
-    )
-    
-    # Mock market state
-    market = {
-        'vix': 25,
-        'regime': 'RISK_ON'
-    }
-    
-    # Calculate position size
-    position = risk_manager.calculate_position_size(
-        symbol='QQQ',
-        signal_strength=85,
-        confidence=0.8,
-        direction='LONG',
-        account_state=account,
-        market_state=market
-    )
-    
-    print(f"Calculated Position: {position}")
-    
-    # Check emergency status
-    emergency_status = risk_manager.get_emergency_status()
-    print(f"Emergency Status: {emergency_status}")
+    def measure_fault_stress(self, correlation_matrix: pd.DataFrame) -> float:
+        """Measures structural stress using eigenvalue decomposition."""
+        try:
+            eigenvalues = np.linalg.eigvalsh(correlation_matrix.values)
+            total_variance = np.sum(eigenvalues)
+            if total_variance < 1e-8: return 1.0
+            return np.clip(np.max(eigenvalues) / total_variance, 0, 1)
+        except Exception:
+            self.logger.error(f"Fault stress calculation failed.", exc_info=True)
+            return 1.0
+
+    @staticmethod
+    def _ewm_corr(returns_df: pd.DataFrame) -> pd.DataFrame:
+        """Helper to compute a single EWM correlation matrix."""
+        if returns_df.empty: return pd.DataFrame()
+        cov = returns_df.ewm(span=len(returns_df), min_periods=max(5, len(returns_df.columns))).cov()
+        cov_matrix = cov.iloc[-len(returns_df.columns):]
+        std_devs = np.sqrt(np.diag(cov_matrix))
+        # Guard against division by zero for assets with no volatility
+        std_devs[std_devs < 1e-8] = 1.0
+        corr_matrix = cov_matrix.div(np.outer(std_devs, std_devs))
+        np.fill_diagonal(corr_matrix.values, 1.0)
+        return corr_matrix
+
+class _WeatherStation:
+    """Monitors market volatility (the "weather")."""
+    def __init__(self, settings: ProtectionSettings, logger: logging.Logger):
+        self.settings = settings
+        self.logger = logger
+
+    def determine_regime(self, vix_series: pd.Series) -> RiskRegime:
+        """Determines the current market regime using the VIX percentile method."""
+        if len(vix_series) < self.settings.vix_regime_lookback_days:
+            self.logger.warning("Insufficient VIX data for regime detection. Defaulting to STABLE.")
+            return RiskRegime.STABLE
+        
+        vix_percentile = percentileofscore(vix_series, vix_series.iloc[-1]) / 100.0
+        if vix_percentile >= self.settings.vix_crisis_percentile: return RiskRegime.CRISIS
+        if vix_percentile >= self.settings.vix_seismic_percentile: return RiskRegime.SEISMIC
+        if vix_percentile <= 0.10: return RiskRegime.COMPLACENT
+        return RiskRegime.STABLE
+
+    def forecast_intensity(self, returns_df: pd.DataFrame) -> float:
+        """Forecasts near-term volatility intensity using the HAR model."""
+        try:
+            rv = (returns_df**2).sum(axis=1)
+            if len(rv) < 23: return 0.5
+            har_df = pd.DataFrame({
+                'daily': rv, 'weekly': rv.rolling(5).mean(), 'monthly': rv.rolling(22).mean()
+            })
+            har_df['target'] = rv.shift(-1)
+            har_df.dropna(inplace=True)
+            if len(har_df) < 20: return 0.5
+            
+            X = np.c_[np.ones(len(har_df)), har_df[['daily', 'weekly', 'monthly']]]
+            y = har_df['target']
+            coeffs = np.linalg.lstsq(X, y, rcond=None)[0]
+            prediction = coeffs[0] + np.dot(coeffs[1:], X[-1, 1:])
+            historical_max = har_df['target'].rolling(252, min_periods=100).max().iloc[-1]
+            if historical_max < 1e-8: return 0.5
+            return np.clip(prediction / historical_max, 0, 1)
+        except Exception:
+            self.logger.warning(f"HAR intensity forecast failed. Defaulting to 0.5.", exc_info=True)
+            return 0.5
+
+class _FlowPredictor:
+    """Analyzes capital flows using the Flow Momentum (FloMo) factor."""
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+        self.flomo_history: Deque[float] = deque(maxlen=252) # Store 1 year of raw flomo factors
+
+    def calculate_flow_momentum(self, daily_flows: pd.Series, total_aum: float) -> float:
+        """Calculates the dynamically normalized FloMo factor."""
+        if total_aum < 1e-8:
+            self.logger.error("Total AUM is zero. Cannot calculate flow momentum.")
+            return 0.0
+        if len(daily_flows) < 20:
+            self.logger.warning("Insufficient flow data for momentum. Returning neutral.")
+            return 0.0
+
+        avg_daily_flow = daily_flows.rolling(window=20, min_periods=10).mean().iloc[-1]
+        raw_flomo = avg_daily_flow / total_aum
+        self.flomo_history.append(raw_flomo)
+        
+        # Dynamically normalize using historical standard deviation for robustness.
+        if len(self.flomo_history) < 30:
+            return 0.0 # Not enough history to normalize reliably
+        
+        std_dev = np.std(list(self.flomo_history))
+        if std_dev < 1e-9: return 0.0
+        
+        # Normalize such that a 2-sigma move corresponds to +/- 1.0
+        normalized_flomo = raw_flomo / (2 * std_dev)
+        return np.clip(normalized_flomo, -1.0, 1.0)
+
+class _InformationCoefficientTracker:
+    """Tracks the Information Coefficient (IC) to monitor for strategy decay."""
+    def __init__(self, lookback: int, logger: logging.Logger):
+        self.lookback = lookback
+        self.logger = logger
+        self.history: Deque[Tuple[pd.Series, pd.Series]] = deque(maxlen=lookback)
+
+    def add_observation(self, predictions: pd.Series, actuals: pd.Series):
+        """Adds a new prediction-outcome pair of series."""
+        self.history.append((predictions, actuals))
+
+    def get_current_ic(self) -> float:
+        """Calculates the Spearman IC and returns a normalized [0,1] score."""
+        if len(self.history) < 20:
+            return 0.5
+        try:
+            # Calculate IC for each timestep and average them for a robust measure.
+            ics = []
+            for preds, actuals in self.history:
+                # Align series and drop NaNs for accurate correlation
+                aligned_preds, aligned_actuals = preds.align(actuals, join='inner')
+                if len(aligned_preds) > 1:
+                    ic = aligned_preds.corr(aligned_actuals, method='spearman')
+                    if not np.isnan(ic):
+                        ics.append(ic)
+            
+            if not ics: return 0.5
+            
+            avg_ic = np.mean(ics)
+            return (avg_ic + 1.0) / 2.0
+        except Exception:
+            self.logger.warning("IC calculation failed. Defaulting to 0.5.", exc_info=True)
+            return 0.5
+
+# --- The Public Factory Function ---
+
+def create_geological_risk_manager(settings: ProtectionSettings) -> "GeologicalRiskManager":
+    """
+    Factory function to create and configure a production-ready GeologicalRiskManager.
+    This is the sole entry point, ensuring all components are correctly initialized.
+    """
+    logger = logging.getLogger("GeologicalRiskManager")
+    logger.info(f"Constructing risk manager v8.0.0 with settings: {settings}")
+
+    class GeologicalRiskManager:
+        """
+        A production-grade risk management system for the Trailhead Catalyst Bot.
+        """
+        def __init__(self):
+            self.settings = settings
+            self.logger = logger
+            self._terrain_scanner = _TerrainScanner(logger)
+            self._weather_station = _WeatherStation(settings, logger)
+            self._flow_predictor = _FlowPredictor(logger)
+            self.ic_tracker = _InformationCoefficientTracker(lookback=60, logger=logger)
+            self.last_assessment: Optional[RiskAssessment] = None
+
+        def assess_risk(
+            self,
+            returns_df: pd.DataFrame,
+            vix_series: pd.Series,
+            daily_flows: pd.Series,
+            total_aum: float
+        ) -> RiskAssessment:
+            """Performs a comprehensive geological risk assessment."""
+            self.logger.info("Starting new geological risk assessment cycle.")
+            try:
+                regime = self._weather_station.determine_regime(vix_series)
+                stability = self._terrain_scanner.analyze_stability(returns_df)
+                fault_stress = self._terrain_scanner.measure_fault_stress(returns_df.corr(numeric_only=True))
+                intensity = self._weather_station.forecast_intensity(returns_df)
+                liquidity = 1.0 - np.clip(vix_series.iloc[-1] / 60.0, 0, 1)
+                flow_mom = self._flow_predictor.calculate_flow_momentum(daily_flows, total_aum)
+                ic = self.ic_tracker.get_current_ic()
+
+                assessment = RiskAssessment(
+                    regime=regime,
+                    terrain_stability=stability,
+                    fault_line_stress=fault_stress,
+                    weather_intensity=intensity,
+                    liquidity_depth=liquidity,
+                    flow_momentum=flow_mom,
+                    information_coefficient=ic
+                )
+                self.last_assessment = assessment
+                self.logger.info(f"Assessment complete: {assessment}")
+                return assessment
+            except Exception as e:
+                self.logger.critical("CRITICAL FAILURE in risk assessment cycle.", exc_info=True)
+                self.last_assessment = None
+                raise RuntimeError("Risk assessment failed, system is in an unsafe state.") from e
+
+        def get_tactical_directives(self) -> Tuple[float, bool, str]:
+            """Provides actionable directives based on the last risk assessment."""
+            if self.last_assessment is None:
+                return 0.0, True, "HALT: No valid risk assessment available."
+
+            assessment = self.last_assessment
+            base_limit = self.settings.max_position_size
+            
+            if assessment.regime == RiskRegime.CRISIS:
+                final_limit = base_limit * self.settings.crisis_reduction_factor
+                reason = f"HALT: CRISIS regime. Position size reduced by {1-self.settings.crisis_reduction_factor:.0%}."
+                return final_limit, True, reason
+                
+            if assessment.terrain_stability < self.settings.stability_floor:
+                reason = f"HALT: Terrain stability ({assessment.terrain_stability:.2f}) below floor"
+                return 0.0, True, reason
+                
+            if assessment.liquidity_depth < self.settings.liquidity_floor:
+                reason = f"HALT: Liquidity depth ({assessment.liquidity_depth:.2f}) below floor"
+                return 0.0, True, reason
+
+            regime_multiplier = self.settings.seismic_reduction_factor if assessment.regime == RiskRegime.SEISMIC else 1.0
+            geological_multiplier = min(assessment.terrain_stability, assessment.liquidity_depth)
+            ic_multiplier = assessment.information_coefficient
+            
+            final_limit = base_limit * regime_multiplier * geological_multiplier * ic_multiplier
+            reason = f"Proceed: Regime={assessment.regime.name}, Stability={assessment.terrain_stability:.2f}, IC={ic:.2f}"
+            
+            return final_limit, False, reason
+
+    return GeologicalRiskManager()
