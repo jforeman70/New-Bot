@@ -46,7 +46,7 @@ def demonstrate_complete_workflow():
         # Step 1: Load and verify data
         print_header("STEP 1: Load Sample Market Data")
         
-        import Optimal_Frontier
+        from Optimal_Frontier import OptimalFrontier
         
         print("📂 Loading market data...")
         returns_df = pd.read_csv('market_returns.csv', index_col=0, parse_dates=True)
@@ -59,7 +59,7 @@ def demonstrate_complete_workflow():
         # Step 2: Calculate efficient frontier
         print_header("STEP 2: Calculate Efficient Frontier")
         
-        frontier = Optimal_Frontier.OptimalFrontier(
+        frontier = OptimalFrontier(
             risk_free_rate=0.02,
             max_position_size=0.30,
             min_position_size=0.0,

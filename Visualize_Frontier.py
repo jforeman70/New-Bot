@@ -9,7 +9,9 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
+# Use non-interactive backend for server environments
+# Change to 'TkAgg' or remove for interactive use (Jupyter, desktop GUI)
+matplotlib.use('Agg')
 from pathlib import Path
 
 def visualize_efficient_frontier(

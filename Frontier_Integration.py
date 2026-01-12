@@ -16,7 +16,6 @@ from datetime import datetime, timedelta
 from Optimal_Frontier import OptimalFrontier, PortfolioMetrics
 from Portfolio_Synthesizer import PortfolioPosition
 from Trailhead_Detector import TrailheadSignal
-from Chemistry_Classifier import AssetChemistry
 
 logger = logging.getLogger(__name__)
 
